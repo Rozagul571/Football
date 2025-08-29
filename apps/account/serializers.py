@@ -56,6 +56,3 @@ class UserAddressSerializer(serializers.ModelSerializer):
         rep['latitude'] = instance.location.y if instance.location else None
         rep['longitude'] = instance.location.x if instance.location else None
         return rep
-
-
-

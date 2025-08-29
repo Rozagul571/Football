@@ -1,66 +1,114 @@
-from django.utils.dateparse import parse_datetime
-from rest_framework import generics
-from django.contrib.gis.db.models.functions import Distance
+from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from .filters import FieldFilter
 from .models import Field
 from .serializers import FieldSerializer
-from apps.account.permissions import IsOwnerOrAdmin
-from django.contrib.gis.geos import Point
+from apps.account.models import UserAddress, User
 from apps.booking.models import Booking
-
-
-class FieldCreateView(generics.CreateAPIView):
-    queryset = Field.objects.all()
-    serializer_class = FieldSerializer
-    permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
-    # parser_classes = [MultiPartParser, FormParser]
-
-    def perform_create(self, serializer):
-        serializer.save(owner=self.request.user)
+from .utils import calculate_distance
+from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 
 class FieldListView(generics.ListAPIView):
-    queryset = Field.objects.filter(is_active=True)
     serializer_class = FieldSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = FieldFilter
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name='start_time', type=str, location='query', description='Start time YYYY-MM-DD HH:MM:SS'),
+            OpenApiParameter(name='end_time', type=str, location='query', description='End time YYYY-MM-DD HH:MM:SS'),
+        ],
+        responses={200: FieldSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        queryset = Field.objects.all()
+
+        start_time = request.query_params.get('start_time')
+        end_time = request.query_params.get('end_time')
+        if start_time and end_time:
+            queryset = Field.objects.filter(is_active=True)
+            queryset = self.filter_queryset(queryset)
+        elif not start_time and not end_time:
+            queryset = Field.objects.all()
+        else:
+            return Response({"error": "start_time va end_time to'liq kiriting"}, status=400)
+
+
+        last_address = UserAddress.objects.filter(user=request.user).first()
+        if not last_address or not last_address.location:
+            return Response({"error": "Manzil topilmadi"}, status=400)
+
+        user_location = last_address.location
+        if queryset.exists():
+            queryset = sorted(queryset, key=lambda f: calculate_distance(user_location, f.address) or float('inf'))
+        serializer = self.get_serializer(queryset, many=True, context={'user_location': user_location})
+        return Response(serializer.data)
 
 class FieldDetailView(generics.RetrieveAPIView):
     queryset = Field.objects.all()
     serializer_class = FieldSerializer
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(responses={200: FieldSerializer})
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        data = serializer.data
+        data['Band qilingan maydon vaqtlar'] = list(Booking.objects.filter(field=instance, is_active=True).values('start_time', 'end_time'))
+        return Response(data)
+
+class FieldCreateView(generics.CreateAPIView):
+    queryset = Field.objects.all()
+    serializer_class = FieldSerializer
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        queryset = User.objects.filter()
+        instance = serializer.save()
+        return Response(serializer.data)
+
+
+    @extend_schema(
+        request=FieldSerializer,
+        responses={201: FieldSerializer}
+    )
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
 
 class FieldUpdateDeleteView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Field.objects.all()
     serializer_class = FieldSerializer
-    permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
-
-class AvailableFieldListView(generics.ListAPIView):
-    serializer_class = FieldSerializer
     permission_classes = [IsAuthenticated]
 
-    def get_queryset(self):
-        queryset = Field.objects.filter(is_active=True)
+    @extend_schema(
+        request=FieldSerializer,
+        responses={200: FieldSerializer}
+    )
+    def put(self, request, *args, **kwargs):
+        return super().put(request, *args, **kwargs)
 
-        start_time = self.request.query_params.get("start_time")
-        end_time = self.request.query_params.get("end_time")
-        lat = self.request.query_params.get("latitude")
-        lon = self.request.query_params.get("longitude")
-
-        if start_time and end_time:
-            start = parse_datetime(start_time)
-            end = parse_datetime(end_time)
-            booked_fields = Booking.objects.filter(
-                start_time__lt=end,
-                end_time__gt=start,
-                is_active=True
-            ).values_list("field_id", flat=True)
-            queryset = queryset.exclude(id__in=booked_fields)
-
-
-        if lat and lon:
-            user_location = Point(float(lon), float(lat), srid=4326)
-            queryset = queryset.annotate(
-                distance=Distance("address", user_location)).order_by("distance")
-        return queryset
+# class FieldAllView(generics.ListAPIView):
+#     serializer_class = FieldSerializer
+#     permission_classes = [IsAuthenticated]
+#
+#     @extend_schema(responses={200: FieldSerializer(many=True)})
+#     def get(self, request, *args, **kwargs):
+#         queryset = Field.objects.all()
+#         serializer = self.get_serializer(queryset, many=True)
+#         last_address = UserAddress.objects.filter(user=request.user).first()
+#
+#         if not last_address or not last_address.location:
+#             return Response({"error": "Manzil topilmadi"}, status=400)
+#
+#         user_location = last_address.location
+#         if queryset.exists():
+#             queryset = sorted(queryset, key=lambda f: calculate_distance(user_location, f.address) or float('inf'))
+#         serializer = self.get_serializer(queryset, many=True, context={'user_location': user_location})
+#         return Response(serializer.data)

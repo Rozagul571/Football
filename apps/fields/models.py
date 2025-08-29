@@ -1,7 +1,6 @@
 from django.db import models
 from django.contrib.gis.db.models import PointField
 from phonenumber_field.modelfields import PhoneNumberField
-from apps.account.models import User
 from config import settings
 
 
